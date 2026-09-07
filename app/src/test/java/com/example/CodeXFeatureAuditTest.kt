@@ -32,7 +32,7 @@ import java.io.File
 import java.util.zip.ZipFile
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [34])
 class CodeXFeatureAuditTest {
 
     private lateinit var context: Context

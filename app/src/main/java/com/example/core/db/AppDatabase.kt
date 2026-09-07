@@ -23,7 +23,7 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "codex_studio.db"
-                ).fallbackToDestructiveMigration().build()
+                ).fallbackToDestructiveMigration(true).build()
                 INSTANCE = instance
                 instance
             }
