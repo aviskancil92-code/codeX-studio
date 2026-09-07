@@ -1,0 +1,6 @@
+{
+  "name": "CodeX Studio",
+  "description": "A full mobile IDE inspired by VS Code Desktop, featuring Monaco Editor, multi-language toolchains, terminal, build orchestrator, and Android APK development.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

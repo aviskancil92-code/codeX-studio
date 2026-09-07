@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>CodeX Monaco Editor</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #181A1F;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, monospace;
+    }
+    #editor-container {
+      width: 100%;
+      height: 100%;
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+    }
+    /* Fallback editor styles if CDN is slow or offline */
+    #fallback-container {
+      display: none;
+      width: 100%;
+      height: 100%;
+      background: #181A1F;
+      color: #D4D4D4;
+      font-family: "JetBrains Mono", "Fira Code", monospace;
+      font-size: 14px;
+      line-height: 1.5;
+      padding: 0;
+      position: relative;
+    }
+    #fallback-lines {
+      width: 44px;
+      background: #131519;
+      color: #6E7681;
+      padding: 12px 6px;
+      text-align: right;
+      user-select: none;
+      font-size: 12px;
+      overflow: hidden;
+      border-right: 1px solid #282C34;
+      float: left;
+      height: 100%;
+      box-sizing: border-box;
+    }
+    #fallback-textarea {
+      position: absolute;
+      left: 45px;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      background: transparent;
+      color: #E6EDF3;
+      border: none;
+      outline: none;
+      resize: none;
+      padding: 12px;
+      font-family: "JetBrains Mono", "Fira Code", monospace;
+      font-size: 14px;
+      line-height: 1.5;
+      white-space: pre;
+      overflow: auto;
+      tab-size: 4;
+    }
+    #loading-indicator {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #58A6FF;
+      font-size: 14px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      z-index: 100;
+      pointer-events: none;
+    }
+    .spinner {
+      width: 32px;
+      height: 32px;
+      border: 3px solid rgba(88, 166, 255, 0.2);
+      border-top-color: #58A6FF;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div id="loading-indicator">
+    <div class="spinner"></div>
+    <span>Loading CodeX Editor...</span>
+  </div>
+
+  <div id="editor-container"></div>
+
+  <div id="fallback-container">
+    <div id="fallback-lines">1</div>
+    <textarea id="fallback-textarea" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+  </div>
+
+  <script>
+    let editor = null;
+    let isMonacoReady = false;
+    let pendingContent = "";
+    let pendingLanguage = "python";
+    let pendingPath = "";
+    let currentTheme = "codex-dark";
+    let fallbackTextarea = document.getElementById("fallback-textarea");
+    let fallbackLines = document.getElementById("fallback-lines");
+    let loadingIndicator = document.getElementById("loading-indicator");
+
+    function notifyNative(method, data) {
+      if (window.AndroidBridge && typeof window.AndroidBridge[method] === 'function') {
+        try {
+          if (data !== undefined) {
+            window.AndroidBridge[method](typeof data === 'object' ? JSON.stringify(data) : String(data));
+          } else {
+            window.AndroidBridge[method]();
+          }
+        } catch (e) {
+          console.error("Error calling AndroidBridge." + method, e);
+        }
+      }
+    }
+
+    // Monaco CDN Loader with offline timeout fallback
+    function loadMonaco() {
+      const loaderScript = document.createElement("script");
+      loaderScript.src = "https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js";
+      loaderScript.async = true;
+
+      const fallbackTimer = setTimeout(() => {
+        if (!isMonacoReady) {
+          initFallbackEditor();
+        }
+      }, 4000);
+
+      loaderScript.onload = () => {
+        try {
+          require.config({
+            paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs' }
+          });
+          window.MonacoEnvironment = {
+            getWorkerUrl: function (workerId, label) {
+              return `data:text/javascript;charset=utf-8,${encodeURIComponent(`
+                self.MonacoEnvironment = {
+                  baseUrl: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/'
+                };
+                importScripts('https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/base/worker/workerMain.js');
+              `)}`;
+            }
+          };
+
+          require(['vs/editor/editor.main'], function () {
+            clearTimeout(fallbackTimer);
+            initMonacoEditor();
+          });
+        } catch (e) {
+          console.error("Monaco require error:", e);
+          initFallbackEditor();
+        }
+      };
+
+      loaderScript.onerror = () => {
+        clearTimeout(fallbackTimer);
+        initFallbackEditor();
+      };
+
+      document.head.appendChild(loaderScript);
+    }
+
+    function initMonacoEditor() {
+      loadingIndicator.style.display = "none";
+      document.getElementById("editor-container").style.display = "block";
+      document.getElementById("fallback-container").style.display = "none";
+
+      // Register Custom Dark Theme
+      monaco.editor.defineTheme('codex-dark', {
+        base: 'vs-dark',
+        inherit: true,
+        rules: [
+          { token: 'comment', foreground: '6E7681', fontStyle: 'italic' },
+          { token: 'keyword', foreground: 'FF7B72', fontStyle: 'bold' },
+          { token: 'identifier', foreground: 'E6EDF3' },
+          { token: 'string', foreground: 'A5D6FF' },
+          { token: 'number', foreground: '79C0FF' },
+          { token: 'type', foreground: 'FFA657' },
+          { token: 'delimiter', foreground: 'D2A8FF' },
+          { token: 'function', foreground: 'D2A8FF' }
+        ],
+        colors: {
+          'editor.background': '#161B22',
+          'editor.foreground': '#E6EDF3',
+          'editorLineNumber.foreground': '#484F58',
+          'editorLineNumber.activeForeground': '#58A6FF',
+          'editorCursor.foreground': '#58A6FF',
+          'editor.selectionBackground': '#1F6FEB44',
+          'editor.inactiveSelectionBackground': '#1F6FEB22',
+          'editor.lineHighlightBackground': '#1F242C',
+          'editorIndentGuide.background': '#21262D',
+          'editorIndentGuide.activeBackground': '#30363D',
+          'editorGutter.background': '#11151C',
+          'editorWidget.background': '#161B22',
+          'editorWidget.border': '#30363D'
+        }
+      });
+
+      monaco.editor.defineTheme('dracula', {
+        base: 'vs-dark',
+        inherit: true,
+        rules: [
+          { token: 'comment', foreground: '6272A4', fontStyle: 'italic' },
+          { token: 'keyword', foreground: 'FF79C6' },
+          { token: 'string', foreground: 'F1FA8C' },
+          { token: 'number', foreground: 'BD93F9' },
+          { token: 'function', foreground: '50FA7B' }
+        ],
+        colors: {
+          'editor.background': '#282A36',
+          'editor.foreground': '#F8F8F2',
+          'editorLineNumber.foreground': '#6272A4',
+          'editorCursor.foreground': '#FF79C6'
+        }
+      });
+
+      editor = monaco.editor.create(document.getElementById('editor-container'), {
+        value: pendingContent || '// Welcome to CodeX Studio\n// Select or create a file to start editing.\n',
+        language: mapLanguage(pendingLanguage),
+        theme: currentTheme,
+        automaticLayout: true,
+        fontSize: 14,
+        fontFamily: "'JetBrains Mono', 'Fira Code', 'Courier New', monospace",
+        minimap: { enabled: true, maxColumn: 60, scale: 1 },
+        scrollBeyondLastLine: false,
+        lineNumbers: 'on',
+        renderWhitespace: 'selection',
+        tabSize: 4,
+        insertSpaces: true,
+        wordWrap: 'on',
+        cursorBlinking: 'smooth',
+        smoothScrolling: true,
+        folding: true,
+        mouseWheelZoom: false,
+        contextmenu: true,
+        quickSuggestions: { other: true, comments: false, strings: true },
+        parameterHints: { enabled: true },
+        bracketPairColorization: { enabled: true }
+      });
+
+      // Track cursor position
+      editor.onDidChangeCursorPosition((e) => {
+        notifyNative("onCursorPosition", JSON.stringify({
+          line: e.position.lineNumber,
+          column: e.position.column
+        }));
+      });
+
+      // Track content changes
+      editor.onDidChangeModelContent(() => {
+        const val = editor.getValue();
+        notifyNative("onContentChanged", val);
+      });
+
+      // Keyboard shortcuts
+      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+        notifyNative("onSaveShortcut");
+      });
+
+      isMonacoReady = true;
+      notifyNative("onEditorReady");
+
+      if (pendingContent) {
+        editor.setValue(pendingContent);
+      }
+    }
+
+    function initFallbackEditor() {
+      loadingIndicator.style.display = "none";
+      document.getElementById("editor-container").style.display = "none";
+      document.getElementById("fallback-container").style.display = "block";
+
+      fallbackTextarea.value = pendingContent || '// CodeX Mobile Editor (Offline Mode)\n';
+      updateFallbackLines();
+
+      fallbackTextarea.addEventListener('input', () => {
+        updateFallbackLines();
+        notifyNative("onContentChanged", fallbackTextarea.value);
+      });
+
+      fallbackTextarea.addEventListener('selectionchange', () => {
+        const pos = getCursorLineCol(fallbackTextarea);
+        notifyNative("onCursorPosition", JSON.stringify(pos));
+      });
+
+      fallbackTextarea.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+          e.preventDefault();
+          notifyNative("onSaveShortcut");
+        } else if (e.key === 'Tab') {
+          e.preventDefault();
+          insertAtCursor(fallbackTextarea, "    ");
+          notifyNative("onContentChanged", fallbackTextarea.value);
+        }
+      });
+
+      isMonacoReady = true;
+      notifyNative("onEditorReady");
+    }
+
+    function updateFallbackLines() {
+      const lines = fallbackTextarea.value.split('\n').length;
+      let lineStr = "";
+      for (let i = 1; i <= lines; i++) {
+        lineStr += i + "<br>";
+      }
+      fallbackLines.innerHTML = lineStr;
+    }
+
+    function getCursorLineCol(textarea) {
+      const text = textarea.value.substr(0, textarea.selectionStart);
+      const lines = text.split('\n');
+      return {
+        line: lines.length,
+        column: lines[lines.length - 1].length + 1
+      };
+    }
+
+    function insertAtCursor(textarea, text) {
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const val = textarea.value;
+      textarea.value = val.substring(0, start) + text + val.substring(end);
+      textarea.selectionStart = textarea.selectionEnd = start + text.length;
+      updateFallbackLines();
+    }
+
+    function mapLanguage(extOrLang) {
+      if (!extOrLang) return 'plaintext';
+      const clean = extOrLang.toLowerCase().replace(/^\./, '');
+      const map = {
+        'py': 'python', 'python': 'python',
+        'kt': 'kotlin', 'kts': 'kotlin', 'kotlin': 'kotlin',
+        'java': 'java',
+        'js': 'javascript', 'jsx': 'javascript', 'javascript': 'javascript',
+        'ts': 'typescript', 'tsx': 'typescript', 'typescript': 'typescript',
+        'cpp': 'cpp', 'c': 'c', 'h': 'cpp', 'hpp': 'cpp', 'cc': 'cpp',
+        'rs': 'rust', 'rust': 'rust',
+        'go': 'go',
+        'dart': 'dart',
+        'cs': 'csharp', 'csharp': 'csharp',
+        'lua': 'lua',
+        'rb': 'ruby', 'ruby': 'ruby',
+        'html': 'html', 'css': 'css', 'json': 'json',
+        'md': 'markdown', 'markdown': 'markdown',
+        'xml': 'xml', 'yaml': 'yaml', 'yml': 'yaml',
+        'sh': 'shell', 'bash': 'shell', 'shell': 'shell',
+        'sql': 'sql', 'gradle': 'groovy'
+      };
+      return map[clean] || clean;
+    }
+
+    // Public API exposed to Android Native Layer
+    window.codexSetContent = function(code, lang, path) {
+      pendingContent = code || "";
+      pendingLanguage = lang || "plaintext";
+      pendingPath = path || "";
+
+      if (editor) {
+        const monacoLang = mapLanguage(pendingLanguage);
+        const oldModel = editor.getModel();
+        if (oldModel) oldModel.dispose();
+        const newModel = monaco.editor.createModel(pendingContent, monacoLang);
+        editor.setModel(newModel);
+      } else if (fallbackTextarea) {
+        fallbackTextarea.value = pendingContent;
+        updateFallbackLines();
+      }
+    };
+
+    window.codexGetContent = function() {
+      if (editor) {
+        return editor.getValue();
+      }
+      return fallbackTextarea ? fallbackTextarea.value : pendingContent;
+    };
+
+    window.codexSetTheme = function(themeName) {
+      currentTheme = themeName;
+      if (editor) {
+        monaco.editor.setTheme(themeName);
+      }
+    };
+
+    window.codexGotoLine = function(line, column) {
+      line = parseInt(line) || 1;
+      column = parseInt(column) || 1;
+      if (editor) {
+        editor.setPosition({ lineNumber: line, column: column });
+        editor.revealPositionInCenter({ lineNumber: line, column: column });
+        editor.focus();
+      } else if (fallbackTextarea) {
+        const lines = fallbackTextarea.value.split('\n');
+        let charCount = 0;
+        for (let i = 0; i < Math.min(line - 1, lines.length); i++) {
+          charCount += lines[i].length + 1;
+        }
+        charCount += Math.min(column - 1, (lines[line - 1] || '').length);
+        fallbackTextarea.focus();
+        fallbackTextarea.setSelectionRange(charCount, charCount);
+      }
+    };
+
+    window.codexInsertText = function(text) {
+      if (editor) {
+        const selection = editor.getSelection();
+        const id = { major: 1, minor: 1 };
+        const op = { identifier: id, range: selection, text: text, forceMoveMarkers: true };
+        editor.executeEdits("keyboard-accessory", [op]);
+        editor.focus();
+      } else if (fallbackTextarea) {
+        insertAtCursor(fallbackTextarea, text);
+        notifyNative("onContentChanged", fallbackTextarea.value);
+      }
+    };
+
+    window.codexFormat = function() {
+      if (editor) {
+        editor.getAction('editor.action.formatDocument').run();
+      }
+    };
+
+    window.codexUndo = function() {
+      if (editor) {
+        editor.trigger('keyboard', 'undo', null);
+      } else {
+        document.execCommand('undo');
+      }
+    };
+
+    window.codexRedo = function() {
+      if (editor) {
+        editor.trigger('keyboard', 'redo', null);
+      } else {
+        document.execCommand('redo');
+      }
+    };
+
+    window.codexFind = function() {
+      if (editor) {
+        editor.getAction('actions.find').run();
+      }
+    };
+
+    window.codexSetReadOnly = function(readOnly) {
+      if (editor) {
+        editor.updateOptions({ readOnly: !!readOnly });
+      }
+      if (fallbackTextarea) {
+        fallbackTextarea.readOnly = !!readOnly;
+      }
+    };
+
+    window.codexSetWordWrap = function(wrap) {
+      if (editor) {
+        editor.updateOptions({ wordWrap: wrap ? 'on' : 'off' });
+      }
+    };
+
+    window.codexSetMinimap = function(show) {
+      if (editor) {
+        editor.updateOptions({ minimap: { enabled: !!show } });
+      }
+    };
+
+    window.codexSetFontSize = function(size) {
+      const parsed = parseInt(size) || 14;
+      if (editor) {
+        editor.updateOptions({ fontSize: parsed });
+      }
+      if (fallbackTextarea) {
+        fallbackTextarea.style.fontSize = parsed + 'px';
+      }
+    };
+
+    window.codexSetMarkers = function(markersJson) {
+      if (!editor || !monaco) return;
+      try {
+        const markers = JSON.parse(markersJson);
+        const model = editor.getModel();
+        if (model) {
+          monaco.editor.setModelMarkers(model, "codex-linter", markers);
+        }
+      } catch (e) {
+        console.error("Failed to set markers:", e);
+      }
+    };
+
+    // Initialize
+    window.addEventListener('DOMContentLoaded', () => {
+      loadMonaco();
+    });
+  </script>
+</body>
+</html>
