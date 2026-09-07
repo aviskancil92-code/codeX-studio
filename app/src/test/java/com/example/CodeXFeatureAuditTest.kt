@@ -186,6 +186,28 @@ class CodeXFeatureAuditTest {
         }
     }
 
+    @Test
+    fun `test build orchestrator executes file and parses diagnostics`() = runBlocking {
+        val orchestrator = BuildOrchestrator(context, processManager)
+        val projDir = workspaceManager.createFromTemplate("python_cli", "OrchestratorTestProj")
+        val mainPy = File(projDir, "main.py")
+        assertTrue(mainPy.exists())
+
+        val result = orchestrator.runFile(mainPy, projDir)
+        assertNotNull(result)
+        assertTrue(result.stdout.isNotBlank())
+        assertTrue(result.isSuccess)
+
+        // Diagnostic parsing test
+        val clangError = "src/main.cpp:10:5: error: expected ';' before 'return'"
+        val diags = orchestrator.parseDiagnostics("main.cpp", clangError)
+        assertEquals(1, diags.size)
+        assertEquals("src/main.cpp", diags[0].file)
+        assertEquals(10, diags[0].line)
+        assertEquals(5, diags[0].column)
+        assertEquals(DiagnosticSeverity.ERROR, diags[0].severity)
+    }
+
     // ==========================================
     // 5. GIT VERSION CONTROL AUDIT
     // ==========================================
